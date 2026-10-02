@@ -230,6 +230,7 @@ class ExportView(APIView):
                     record.supplier,
                     record.operator.username if record.operator else '',
                     record.stock_in_time.strftime('%Y-%m-%d %H:%M:%S')
+                    if record.stock_in_time else '未完成'
                 ])
             
             filename = f'入库记录_{datetime.now().strftime("%Y%m%d%H%M%S")}.xlsx'

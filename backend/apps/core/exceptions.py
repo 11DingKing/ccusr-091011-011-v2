@@ -6,6 +6,7 @@ from rest_framework.views import exception_handler
 from rest_framework.response import Response
 from rest_framework import status
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import OperationalError
 from django.http import Http404
 
 logger = logging.getLogger('apps')
@@ -70,6 +71,16 @@ def custom_exception_handler(exc, context):
             'message': '资源不存在',
             'data': None
         }, status=status.HTTP_404_NOT_FOUND)
+
+    # 处理数据库写锁冲突（如交班并发竞争），提示客户端重试而非报 500
+    if isinstance(exc, OperationalError) and 'locked' in str(exc).lower():
+        logger.warning("Database lock conflict: %s", exc)
+        return Response({
+            'success': False,
+            'code': 409,
+            'message': '操作冲突，其他处理正在进行，请稍后重试',
+            'data': None
+        }, status=status.HTTP_409_CONFLICT)
     
     # 调用默认的异常处理
     response = exception_handler(exc, context)

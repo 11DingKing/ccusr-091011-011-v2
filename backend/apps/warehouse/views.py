@@ -3,6 +3,7 @@
 """
 import logging
 import io
+from django.db.models import Count, Q
 from django.http import HttpResponse
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
@@ -10,13 +11,17 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from apps.core.response import success_response, error_response
+from apps.authentication.models import User
 from .models import Unit, Category, Variety, Goods, StockIn, StockOut, Warning, Approval
+from . import handover as handover_service
 from .serializers import (
     UnitSerializer, UnitCreateSerializer,
     CategorySerializer, CategoryCreateSerializer,
     VarietySerializer, VarietyCreateSerializer,
     GoodsSerializer, StockInSerializer, StockOutSerializer,
-    WarningSerializer, ApprovalSerializer
+    WarningSerializer, ApprovalSerializer,
+    HandoverSessionListSerializer, HandoverSessionDetailSerializer,
+    HandoverSessionCreateSerializer, HandoverReturnSerializer,
 )
 
 logger = logging.getLogger('apps')
@@ -628,7 +633,7 @@ class WarningListView(APIView):
 class ApprovalListView(APIView):
     """审批记录列表视图"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
         return success_response(data={
             'list': [],
@@ -636,3 +641,177 @@ class ApprovalListView(APIView):
             'page': 1,
             'page_size': 10
         })
+
+
+# ==================== 岗位交班 ====================
+
+def _handover_error(exc):
+    return error_response(message=exc.message, code=exc.code)
+
+
+class HandoverSessionListView(APIView):
+    """交班会话列表 / 发起交班"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        queryset = (
+            handover_service.HandoverSession.objects
+            .select_related('handover_from', 'handover_to')
+            .annotate(
+                total_count=Count('items'),
+                accepted_count=Count('items', filter=Q(items__status='accepted')),
+                returned_count=Count('items', filter=Q(items__status='returned')),
+                pending_count=Count('items', filter=Q(items__status='pending')),
+            )
+            .order_by('-handover_at', '-id')
+        )
+
+        status_filter = request.query_params.get('status')
+        if status_filter in ['open', 'confirmed', 'cancelled']:
+            queryset = queryset.filter(status=status_filter)
+
+        page = max(int(request.query_params.get('page', 1)), 1)
+        page_size = min(max(int(request.query_params.get('page_size', 10)), 1), 100)
+        total = queryset.count()
+        sessions = queryset[(page - 1) * page_size:page * page_size]
+
+        return success_response(data={
+            'list': HandoverSessionListSerializer(sessions, many=True).data,
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+        })
+
+    def post(self, request):
+        """交班人发起交班：归集指定时间点的未决事项"""
+        serializer = HandoverSessionCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            first_error = list(serializer.errors.values())[0][0]
+            return error_response(message=str(first_error))
+
+        data = serializer.validated_data
+        try:
+            successor = User.objects.get(pk=data['handover_to'], is_active=True)
+            session = handover_service.create_session(
+                handover_at=data['handover_at'],
+                handover_from=request.user,
+                handover_to=successor,
+                remark=data.get('remark', ''),
+            )
+        except handover_service.HandoverError as exc:
+            return _handover_error(exc)
+
+        detail = handover_service.get_session_detail(session.id)
+        logger.info(
+            "User %s created handover session %s -> user %s",
+            request.user.username, session.id, successor.username,
+        )
+        return success_response(
+            data=HandoverSessionDetailSerializer(detail).data, message='交班已发起'
+        )
+
+
+class HandoverSessionDetailView(APIView):
+    """交班清单详情（含事项与操作轨迹）"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        session = handover_service.get_session_detail(pk)
+        if session is None:
+            return error_response(message='交班会话不存在', code=404)
+        return success_response(data=HandoverSessionDetailSerializer(session).data)
+
+
+class HandoverItemAcceptView(APIView):
+    """接班人接受单项事项，处理责任即时转移"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, session_id, item_id):
+        try:
+            item = handover_service.accept_item(
+                session_id, item_id, acceptee=request.user
+            )
+        except handover_service.HandoverSession.DoesNotExist:
+            return error_response(message='交班会话不存在', code=404)
+        except handover_service.HandoverError as exc:
+            return _handover_error(exc)
+
+        logger.info(
+            "User %s accepted handover item %s in session %s",
+            request.user.username, item_id, session_id,
+        )
+        session = handover_service.get_session_detail(session_id)
+        return success_response(
+            data=HandoverSessionDetailSerializer(session).data,
+            message=f'已接受，处理责任已转移至{request.user.username}',
+        )
+
+
+class HandoverItemReturnView(APIView):
+    """接班人退回单项事项"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, session_id, item_id):
+        serializer = HandoverReturnSerializer(data=request.data)
+        if not serializer.is_valid():
+            first_error = list(serializer.errors.values())[0][0]
+            return error_response(message=str(first_error))
+
+        try:
+            handover_service.return_item(
+                session_id, item_id,
+                actor=request.user,
+                reason=serializer.validated_data['reason'],
+            )
+        except handover_service.HandoverSession.DoesNotExist:
+            return error_response(message='交班会话不存在', code=404)
+        except handover_service.HandoverError as exc:
+            return _handover_error(exc)
+
+        logger.info(
+            "User %s returned handover item %s in session %s",
+            request.user.username, item_id, session_id,
+        )
+        session = handover_service.get_session_detail(session_id)
+        return success_response(
+            data=HandoverSessionDetailSerializer(session).data, message='事项已退回'
+        )
+
+
+class HandoverSessionConfirmView(APIView):
+    """交班人确认完成交班"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            handover_service.confirm_session(pk, confirmer=request.user)
+        except handover_service.HandoverSession.DoesNotExist:
+            return error_response(message='交班会话不存在', code=404)
+        except handover_service.HandoverError as exc:
+            return _handover_error(exc)
+
+        logger.info("User %s confirmed handover session %s", request.user.username, pk)
+        session = handover_service.get_session_detail(pk)
+        return success_response(
+            data=HandoverSessionDetailSerializer(session).data, message='交班已完成'
+        )
+
+
+class HandoverSessionCancelView(APIView):
+    """确认前取消交班，回滚已转移的责任"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            handover_service.cancel_session(pk, actor=request.user)
+        except handover_service.HandoverSession.DoesNotExist:
+            return error_response(message='交班会话不存在', code=404)
+        except handover_service.HandoverError as exc:
+            return _handover_error(exc)
+
+        logger.info("User %s cancelled handover session %s", request.user.username, pk)
+        session = handover_service.get_session_detail(pk)
+        return success_response(
+            data=HandoverSessionDetailSerializer(session).data,
+            message='交班已取消，已接受事项的处理责任已回滚',
+        )

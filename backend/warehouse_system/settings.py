@@ -35,9 +35,29 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": os.environ.get("SQLITE_PATH", str(BASE_DIR / "db.sqlite3")),
+        # timeout 让写事务排队；WAL 模式由下方 connection_created 信号开启，
+        # 避免交班并发接受时 SQLite 锁升级直接报 database is locked。
         "OPTIONS": {"timeout": 20},
+        "TEST": {
+            # 使用文件型测试库：内存共享缓存库不支持 WAL，
+            # 岗位交班的多线程并发用例需要真实的 WAL 锁语义。
+            "NAME": str(BASE_DIR / "test_db.sqlite3"),
+        },
     }
 }
+
+
+def _enable_sqlite_wal(sender, connection, **kwargs):
+    """每个 SQLite 连接开启 WAL 与忙等待。"""
+    if connection.vendor == "sqlite":
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA busy_timeout=20000;")
+
+
+from django.db.backends.signals import connection_created  # noqa: E402
+
+connection_created.connect(_enable_sqlite_wal)
 AUTH_PASSWORD_VALIDATORS = []
 AUTH_USER_MODEL = "authentication.User"
 LANGUAGE_CODE = "zh-hans"

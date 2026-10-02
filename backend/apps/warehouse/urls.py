@@ -8,7 +8,10 @@ from .views import (
     VarietyListView, VarietyDetailView, VarietyBatchDeleteView,
     VarietyTemplateView, VarietyImportView,
     DashboardView, GoodsListView, StockInListView, StockOutListView,
-    WarningListView, ApprovalListView
+    WarningListView, ApprovalListView,
+    HandoverSessionListView, HandoverSessionDetailView,
+    HandoverItemAcceptView, HandoverItemReturnView,
+    HandoverSessionConfirmView, HandoverSessionCancelView,
 )
 
 urlpatterns = [
@@ -48,4 +51,14 @@ urlpatterns = [
     
     # 审批管理
     path('approvals/', ApprovalListView.as_view(), name='approval-list'),
+
+    # 岗位交班
+    path('handovers/', HandoverSessionListView.as_view(), name='handover-list'),
+    path('handovers/<int:pk>/', HandoverSessionDetailView.as_view(), name='handover-detail'),
+    path('handovers/<int:pk>/confirm/', HandoverSessionConfirmView.as_view(), name='handover-confirm'),
+    path('handovers/<int:pk>/cancel/', HandoverSessionCancelView.as_view(), name='handover-cancel'),
+    path('handovers/<int:session_id>/items/<int:item_id>/accept/',
+         HandoverItemAcceptView.as_view(), name='handover-item-accept'),
+    path('handovers/<int:session_id>/items/<int:item_id>/return/',
+         HandoverItemReturnView.as_view(), name='handover-item-return'),
 ]
