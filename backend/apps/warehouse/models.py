@@ -172,6 +172,14 @@ class StockOut(models.Model):
         User, on_delete=models.SET_NULL, null=True,
         related_name='stock_out_operations', verbose_name='操作人'
     )
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True,
+        related_name='created_stock_outs', verbose_name='原始创建人'
+    )
+    current_handler = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True,
+        related_name='handled_stock_outs', verbose_name='当前处理责任人'
+    )
     receiver = models.CharField('领用人', max_length=100)
     receiver_dept = models.CharField('领用部门', max_length=100, blank=True)
     quantity = models.DecimalField('出库数量', max_digits=12, decimal_places=2)
@@ -188,6 +196,16 @@ class StockOut(models.Model):
     
     def __str__(self):
         return f"{self.goods.name} - {self.quantity}"
+
+    def save(self, *args, **kwargs):
+        # 新建单据默认原始创建人、当前责任人与操作人一致；
+        # 交班只改写 current_handler，created_by 全程不动
+        if self._state.adding:
+            if self.created_by_id is None:
+                self.created_by_id = self.operator_id
+            if self.current_handler_id is None:
+                self.current_handler_id = self.operator_id
+        super().save(*args, **kwargs)
 
 
 class Warning(models.Model):

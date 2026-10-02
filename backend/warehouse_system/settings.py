@@ -17,6 +17,7 @@ INSTALLED_APPS = [
     "apps.warehouse",
     "apps.personnel",
     "apps.reports",
+    "apps.handover",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -36,6 +37,8 @@ DATABASES = {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": os.environ.get("SQLITE_PATH", str(BASE_DIR / "db.sqlite3")),
         "OPTIONS": {"timeout": 20},
+        # 测试默认用内存库；需要跨线程/跨连接验证并发时由 conftest 指向临时文件库
+        "TEST": {"NAME": os.environ.get("SQLITE_TEST_PATH")},
     }
 }
 AUTH_PASSWORD_VALIDATORS = []

@@ -165,12 +165,17 @@ class StockOutSerializer(serializers.ModelSerializer):
     """出库记录序列化器"""
     goods_name = serializers.CharField(source='goods.name', read_only=True)
     operator_name = serializers.CharField(source='operator.username', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    current_handler_name = serializers.CharField(
+        source='current_handler.username', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-    
+
     class Meta:
         model = StockOut
         fields = [
             'id', 'goods', 'goods_name', 'operator', 'operator_name',
+            'created_by', 'created_by_name',
+            'current_handler', 'current_handler_name',
             'receiver', 'receiver_dept', 'quantity', 'status', 'status_display',
             'stock_out_time', 'remark', 'created_at'
         ]
